@@ -5,6 +5,33 @@ local lib = require "neotest.lib"
 
 local M = {}
 
+M.template_literal_wildcard = "__NEOTEST_MOCHA_WILDCARD__"
+
+---@param s string
+---@return string
+function M.normalize_template_literal_text(s)
+  local function normalize_template_literal_segment(segment)
+    local matched = string.match(segment, "^`(.*)`$")
+    if not matched then
+      return segment
+    end
+
+    return (
+      matched
+        :gsub("%${.-}", M.template_literal_wildcard)
+        :gsub("%%s", M.template_literal_wildcard)
+        :gsub("%%i", M.template_literal_wildcard)
+        :gsub("%%d", M.template_literal_wildcard)
+        :gsub("%%f", M.template_literal_wildcard)
+        :gsub("%%j", M.template_literal_wildcard)
+        :gsub("%%o", M.template_literal_wildcard)
+        :gsub("%%#", M.template_literal_wildcard)
+    )
+  end
+
+  return (s:gsub("`[^`]*`", normalize_template_literal_segment))
+end
+
 -- Some path utilities
 M.path = (function()
   local is_windows = uv.os_uname().version:match "Windows"
@@ -294,61 +321,99 @@ end
 ---@param consoleOut string
 ---@return table<string, neotest.Result>
 function M.parsed_json_to_results(data, tree, consoleOut)
+  ---@param s string
+  ---@return string
+  local function escape_lua_pattern(s)
+    return (
+      s:gsub("%%", "%%%%")
+        :gsub("%^", "%%^")
+        :gsub("%$", "%%$")
+        :gsub("%(", "%%(")
+        :gsub("%)", "%%)")
+        :gsub("%.", "%%.")
+        :gsub("%[", "%%[")
+        :gsub("%]", "%%]")
+        :gsub("%*", "%%*")
+        :gsub("%+", "%%+")
+        :gsub("%-", "%%-")
+        :gsub("%?", "%%?")
+    )
+  end
+
+  ---@param nodeKey string
+  ---@return string
+  local function node_key_to_pattern(nodeKey)
+    return "^"
+      .. escape_lua_pattern(nodeKey):gsub(M.template_literal_wildcard, ".*")
+      .. "$"
+  end
+
+  ---@param testKey string
+  ---@return table|nil
+  local function find_test_node(testKey)
+    for _, node in tree:iter() do
+      local nodeKey = M.normalize_template_literal_text(node.id:gsub("::", " "))
+
+      if testKey == nodeKey then
+        return node
+      end
+    end
+
+    for _, node in tree:iter() do
+      local nodeKey = M.normalize_template_literal_text(node.id:gsub("::", " "))
+
+      if string.find(nodeKey, M.template_literal_wildcard, 1, true) then
+        if string.match(testKey, node_key_to_pattern(nodeKey)) then
+          return node
+        end
+      end
+    end
+
+    return nil
+  end
+
   local tests = {}
 
   for _, test in pairs(data.tests) do
     local testKey = test.file .. " " .. test.fullTitle
     local name = test.title
-    local status
-    local errors = {}
-    local testNode
+    local testNode = find_test_node(testKey)
 
-    -- This is needed due to mocha not providing a way to get all the namespaces
-    -- of a test. We need to find the test node in the tree by replacing the tokens
-    -- with spaces and matching with the full title.
-    for _, node in tree:iter() do
-      local nodeKey = node.id:gsub("::", " ")
+    if testNode then
+      local status
+      local errors = {}
 
-      if testKey == nodeKey then
-        testNode = node
-        break
+      if test.err and not vim.tbl_isempty(test.err) then
+        status = "failed"
+      elseif test.duration ~= nil then
+        status = "passed"
+      else
+        status = "skipped"
       end
+
+      local keyid = testNode.id
+      local short = name .. ": " .. status
+
+      if status == "failed" then
+        local msg = M.clean_ansi(test.err.message)
+        local errorLine, errorColumn = M.find_error_position(test.file, test.err.stack)
+
+        table.insert(errors, {
+          line = errorLine and errorLine - 1 or testNode.range[1],
+          column = errorColumn and errorColumn - 1 or testNode.range[2],
+          message = msg,
+        })
+
+        short = short .. "\n" .. msg
+      end
+
+      tests[keyid] = {
+        status = status,
+        output = consoleOut,
+        short = short,
+        errors = errors,
+      }
     end
-
-    if not testNode then
-      break
-    end
-
-    if not vim.tbl_isempty(test.err) then
-      status = "failed"
-    elseif test.duration ~= nil then
-      status = "passed"
-    else
-      status = "skipped"
-    end
-
-    local keyid = testNode.id
-    local short = name .. ": " .. status
-
-    if status == "failed" then
-      local msg = M.clean_ansi(test.err.message)
-      local errorLine, errorColumn = M.find_error_position(test.file, test.err.stack)
-
-      table.insert(errors, {
-        line = errorLine and errorLine - 1 or testNode.range[1],
-        column = errorColumn and errorColumn - 1 or testNode.range[2],
-        message = msg,
-      })
-
-      short = short .. "\n" .. msg
-    end
-
-    tests[keyid] = {
-      status = status,
-      output = consoleOut,
-      short = short,
-      errors = errors,
-    }
   end
 
   return tests

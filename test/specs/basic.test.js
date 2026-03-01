@@ -73,8 +73,20 @@ describe("backtick suite", () => {
     assert.ok(true)
   });
 
+  it(`backticks text should fail`, () => {
+    assert.ok(false)
+  });
+
   const variable = 'some value'
   it(`backticks text with variable: ${variable}`, () => {
+    assert.ok(true)
+  })
+
+  it(`backticks text with "double quotes"`, () => {
+    assert.ok(true)
+  })
+
+  it(`backticks text with 'single quotes'`, () => {
     assert.ok(true)
   })
 })

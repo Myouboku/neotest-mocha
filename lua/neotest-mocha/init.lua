@@ -72,32 +72,6 @@ function Adapter.filter_dir(name)
   return name ~= "node_modules"
 end
 
----@param s string
----@return boolean
-local function isTemplateLiteral(s)
-  return string.sub(s, 1, 1) == "`"
-end
-
----@param s string
----@return string
-local function getStringFromTemplateLiteral(s)
-  local matched = string.match(s, "^`(.*)`$")
-  if not matched then
-    return s
-  end
-  return (
-    matched
-      :gsub("%${.*}", ".*") -- template literal ${var}
-      :gsub("%%s", "\\w*") -- test each %s string param
-      :gsub("%%i", "\\d*") -- test each %i integer param
-      :gsub("%%d", ".*") -- test each %d number param
-      :gsub("%%f", ".*") -- test each %f float param
-      :gsub("%%j", ".*") -- test each %j json param
-      :gsub("%%o", ".*") -- test each %o object param
-      :gsub("%%#", "\\d*") -- test each %# index param
-  )
-end
-
 ---Given a file path, parse all the tests within it.
 ---@async
 ---@param file_path string Absolute file path
@@ -133,43 +107,7 @@ function Adapter.discover_positions(file_path)
     )) @test.definition
   ]]
 
-  local parsedTree = lib.treesitter.parse_positions(file_path, query, { nested_tests = true })
-
-  for _, node in parsedTree:iter_nodes() do
-    if #node:children() > 0 then
-      for _, pos in node:iter_nodes() do
-        if pos.type == "test" then
-          local test = pos:data()
-          if isTemplateLiteral(test.name) then
-            local testNode = parsedTree:get_key(test.id)
-            local originalId = test.id
-            if not testNode then
-              return
-            end
-            local parent = testNode:parent()
-            if not parent then
-              return
-            end
-
-            test.name = getStringFromTemplateLiteral(test.name)
-            test.id = test.path .. "::" .. test.name
-
-            --[[ vim.pretty_print(parent) ]]
-            --[[ vim.pretty_print(parent._children) ]]
-            --[[ vim.pretty_print(parent._children[1]) ]]
-            for i, child in pairs(parent._children) do
-              if originalId == child:data().id then
-                parent._children[i]:data().id = test.id
-              end
-            end
-            testNode._parent = parent
-          end
-        end
-      end
-    end
-  end
-
-  return parsedTree
+  return lib.treesitter.parse_positions(file_path, query, { nested_tests = true })
 end
 
 ---@param args neotest.RunArgs
@@ -189,7 +127,9 @@ function Adapter.build_spec(args)
   if pos.type == "test" or pos.type == "namespace" then
     testName = string.sub(pos.id, string.find(pos.id, "::") + 2)
     testName, _ = string.gsub(testName, "::", " ")
-    testNamePattern = "^" .. util.escape_test_pattern(testName) .. (pos.type == "test" and "$" or "")
+    testNamePattern = util.escape_test_pattern(util.normalize_template_literal_text(testName))
+      :gsub(util.template_literal_wildcard, ".*")
+    testNamePattern = "^" .. testNamePattern .. (pos.type == "test" and "$" or "")
   end
 
   local binary = get_mocha_command(pos.path)
